@@ -1,10 +1,11 @@
 use std::ops::Deref;
 use std::ptr::NonNull;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::Acquire;
-use std::sync::atomic::Ordering::Relaxed;
-use std::sync::atomic::Ordering::Release;
-use std::sync::atomic::fence;
+
+use crate::alt::sync::atomic::AtomicUsize;
+use crate::alt::sync::atomic::Ordering::Acquire;
+use crate::alt::sync::atomic::Ordering::Relaxed;
+use crate::alt::sync::atomic::Ordering::Release;
+use crate::alt::sync::atomic::fence;
 
 struct ArcData<T> {
     ref_count: AtomicUsize,
@@ -63,25 +64,43 @@ impl<T> Drop for Arc<T> {
     }
 }
 
-#[test]
+#[cfg(test)]
 fn test() {
-    static NUM_DROPS: AtomicUsize = AtomicUsize::new(0);
+    use crate::alt::thread;
 
-    struct DetectDrop;
+
+    // Loom's AtomicUsize::new() is not const, so we can't use it to initialize
+    // static directly.  We can use Box::leak instead, but then it becomes
+    // impossible to reclaim the memory leaked when running the test many times.
+    // So instead, we manage num_drops's lifetime with Arc itself.
+    let num_drops = Arc::new(AtomicUsize::new(0));
+
+    // Since num_drops is not static, we can't refer to it in drop(), so we have
+    // to pass it explicitly.
+    struct DetectDrop {
+        num_drops: Arc<AtomicUsize>,
+    }
+
+    impl DetectDrop {
+        fn new(num_drops: Arc<AtomicUsize>) -> Self {
+            Self { num_drops }
+        }
+    }
 
     impl Drop for DetectDrop {
         fn drop(&mut self) {
-            NUM_DROPS.fetch_add(1, Relaxed);
+            self.num_drops.fetch_add(1, Relaxed);
         }
     }
 
     // Create two Arcs sharing an object containing a string
     // and a DetectDrop, to detect when it's dropped.
-    let x = Arc::new(("hello", DetectDrop));
+    //let x = Arc::new(("hello", DetectDrop::new(&num_drops)));
+    let x = Arc::new(("hello", DetectDrop::new(num_drops.clone())));
     let y = x.clone();
 
     // Send x to another thread, and use it there.
-    let t = std::thread::spawn(move || {
+    let t = thread::spawn(move || {
         assert_eq!(x.0, "hello");
     });
 
@@ -93,12 +112,24 @@ fn test() {
 
     // One Arc, x, should be dropped by now.
     // We still have y, so the object shouldn't have been dropped yet.
-    assert_eq!(NUM_DROPS.load(Relaxed), 0);
+    assert_eq!(num_drops.load(Relaxed), 0);
 
     // Drop the remaining `Arc`.
     drop(y);
 
     // Now that `y` is dropped too,
     // the object should've been dropped.
-    assert_eq!(NUM_DROPS.load(Relaxed), 1);
+    assert_eq!(num_drops.load(Relaxed), 1);
+}
+
+#[cfg(not(loom))]
+#[test]
+fn test_not_loom() {
+    test()
+}
+
+#[cfg(loom)]
+#[test]
+fn test_loom() {
+    loom::model(|| test());
 }

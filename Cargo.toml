@@ -4,3 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7.2"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
