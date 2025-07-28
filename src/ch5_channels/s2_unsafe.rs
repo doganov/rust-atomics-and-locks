@@ -21,7 +21,8 @@ impl<T> Channel<T> {
 
     /// Safety: Only call this once!
     pub unsafe fn send(&self, message: T) {
-        (*self.message.get()).write(message);
+        let maybe: &mut MaybeUninit<T> = unsafe { &mut (*self.message.get()) };
+        maybe.write(message);
         self.ready.store(true, Release);
     }
 
@@ -32,6 +33,6 @@ impl<T> Channel<T> {
     /// Safety: Only call this once,
     /// and only after is_ready() returns true!
     pub unsafe fn receive(&self) -> T {
-        (*self.message.get()).assume_init_read()
+        unsafe { (*self.message.get()).assume_init_read() }
     }
 }
